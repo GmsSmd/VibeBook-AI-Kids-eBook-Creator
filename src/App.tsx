@@ -24,7 +24,12 @@ import {
   Archive,
   Edit3,
   Trash2,
-  Plus
+  Plus,
+  Play,
+  ImagePlus,
+  CheckCircle2,
+  AlertCircle,
+  Circle
 } from 'lucide-react';
 import { 
   generateStoryBlueprint, 
@@ -60,6 +65,24 @@ const BOOK_SIZES = [
   { label: '8.5" x 11"', width: 8.5, height: 11 }
 ];
 
+const StatusBadge = ({ status }: { status: 'empty' | 'generating' | 'complete' | 'error' }) => {
+  const config = {
+    empty: { color: 'bg-zinc-800 text-zinc-500', label: 'Empty', icon: Circle },
+    generating: { color: 'bg-emerald-500/20 text-emerald-500 animate-pulse', label: 'Generating', icon: Loader2 },
+    complete: { color: 'bg-emerald-500 text-white', label: 'Complete', icon: CheckCircle2 },
+    error: { color: 'bg-rose-500 text-white', label: 'Error', icon: AlertCircle },
+  };
+
+  const { color, label, icon: Icon } = config[status];
+
+  return (
+    <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-[8px] font-bold uppercase tracking-wider ${color}`}>
+      <Icon className={`w-2.5 h-2.5 ${status === 'generating' ? 'animate-spin' : ''}`} />
+      {label}
+    </div>
+  );
+};
+
 export default function App() {
   const [topic, setTopic] = useState('Space Exploration');
   const [pageCount, setPageCount] = useState(10);
@@ -71,12 +94,16 @@ export default function App() {
   const [author, setAuthor] = useState('');
   const [charDesc, setCharDesc] = useState('');
   
+  // Range Inputs
+  const [startRange, setStartRange] = useState(1);
+  const [endRange, setEndRange] = useState(10);
+
   const [isGeneratingBlueprint, setIsGeneratingBlueprint] = useState(false);
   const [blueprint, setBlueprint] = useState<StoryBlueprint | null>(null);
   
   const [isGeneratingImages, setIsGeneratingImages] = useState(false);
-  const [coverImage, setCoverImage] = useState<string | null>(null);
-  const [endImage, setEndImage] = useState<string | null>(null);
+  const [coverImage, setCoverImage] = useState<{ url?: string; status: 'empty' | 'generating' | 'complete' | 'error' }>({ status: 'empty' });
+  const [endImage, setEndImage] = useState<{ url?: string; status: 'empty' | 'generating' | 'complete' | 'error' }>({ status: 'empty' });
   
   const [currentPageIndex, setCurrentPageIndex] = useState(-1);
   const [error, setError] = useState<string | null>(null);
@@ -108,6 +135,8 @@ export default function App() {
         pageCount
       );
       setBlueprint(result);
+      setStartRange(1);
+      setEndRange(pageCount);
       setCurrentPageIndex(-1);
     } catch (err) {
       setError('Failed to generate story. Please try again.');
@@ -119,14 +148,49 @@ export default function App() {
 
   const generatePage = async (index: number) => {
     if (!blueprint) return;
+    
+    // Set status to generating
+    setBlueprint(prev => {
+      if (!prev) return null;
+      const newPages = [...prev.pages];
+      newPages[index] = { ...newPages[index], status: 'generating' };
+      return { ...prev, pages: newPages };
+    });
+
     const page = blueprint.pages[index];
     try {
       const img = await generatePageImage(page.illustrationPrompt, finalStyle, charDesc);
-      const newPages = [...blueprint.pages];
-      newPages[index] = { ...page, imageUrl: img };
-      setBlueprint({ ...blueprint, pages: newPages });
+      setBlueprint(prev => {
+        if (!prev) return null;
+        const newPages = [...prev.pages];
+        newPages[index] = { ...newPages[index], imageUrl: img, status: 'complete' };
+        return { ...prev, pages: newPages };
+      });
     } catch (err) {
+      setBlueprint(prev => {
+        if (!prev) return null;
+        const newPages = [...prev.pages];
+        newPages[index] = { ...newPages[index], status: 'error' };
+        return { ...prev, pages: newPages };
+      });
       setError(`Failed to generate image for page ${index + 1}`);
+    }
+  };
+
+  const handleGenerateRange = async () => {
+    if (!blueprint) return;
+    setIsGeneratingImages(true);
+    try {
+      const startIdx = Math.max(0, startRange - 1);
+      const endIdx = Math.min(blueprint.pages.length - 1, endRange - 1);
+      
+      for (let i = startIdx; i <= endIdx; i++) {
+        await generatePage(i);
+      }
+    } catch (err) {
+      setError('Failed to generate some illustrations in range.');
+    } finally {
+      setIsGeneratingImages(false);
     }
   };
 
@@ -135,8 +199,9 @@ export default function App() {
     setIsGeneratingImages(true);
     try {
       // Cover
+      setCoverImage({ status: 'generating' });
       const cover = await generatePageImage(`Cover for ${blueprint.title}`, finalStyle, charDesc, true);
-      setCoverImage(cover);
+      setCoverImage({ url: cover, status: 'complete' });
 
       // Pages
       for (let i = 0; i < blueprint.pages.length; i++) {
@@ -144,8 +209,9 @@ export default function App() {
       }
 
       // End
+      setEndImage({ status: 'generating' });
       const end = await generatePageImage("Closing scene", finalStyle, charDesc);
-      setEndImage(end);
+      setEndImage({ url: end, status: 'complete' });
     } catch (err) {
       setError('Failed to generate some illustrations.');
     } finally {
@@ -154,10 +220,6 @@ export default function App() {
   };
 
   const handleRegeneratePage = async (index: number) => {
-    if (!blueprint) return;
-    const newPages = [...blueprint.pages];
-    newPages[index].imageUrl = undefined;
-    setBlueprint({ ...blueprint, pages: newPages });
     await generatePage(index);
   };
 
@@ -174,8 +236,8 @@ export default function App() {
     const safeHeight = bookSize.height - (bleed * 2);
 
     // Cover
-    if (coverImage) {
-      doc.addImage(coverImage, 'PNG', bleed, bleed, safeWidth, safeHeight);
+    if (coverImage.url) {
+      doc.addImage(coverImage.url, 'PNG', bleed, bleed, safeWidth, safeHeight);
       doc.addPage();
     }
 
@@ -183,15 +245,22 @@ export default function App() {
     blueprint.pages.forEach((page, i) => {
       if (page.imageUrl) {
         doc.addImage(page.imageUrl, 'PNG', bleed, bleed, safeWidth, safeHeight);
-        doc.setFontSize(12);
-        doc.text(page.text, bookSize.width / 2, bookSize.height - bleed - 0.5, { align: 'center' });
+      } else {
+        // Placeholder for blank pages
+        doc.setFillColor(240, 240, 240);
+        doc.rect(bleed, bleed, safeWidth, safeHeight, 'F');
+        doc.setFontSize(10);
+        doc.text(`[Page ${page.pageNumber} Illustration Missing]`, bookSize.width / 2, bookSize.height / 2, { align: 'center' });
       }
-      if (i < blueprint.pages.length - 1 || endImage) doc.addPage();
+      doc.setFontSize(12);
+      doc.text(page.text, bookSize.width / 2, bookSize.height - bleed - 0.5, { align: 'center' });
+      
+      if (i < blueprint.pages.length - 1 || endImage.url) doc.addPage();
     });
 
     // End
-    if (endImage) {
-      doc.addImage(endImage, 'PNG', bleed, bleed, safeWidth, safeHeight);
+    if (endImage.url) {
+      doc.addImage(endImage.url, 'PNG', bleed, bleed, safeWidth, safeHeight);
     }
 
     doc.save(`${blueprint.title.replace(/\s+/g, '_')}.pdf`);
@@ -203,19 +272,28 @@ export default function App() {
     pptx.layout = 'LAYOUT_WIDE';
 
     // Cover
-    if (coverImage) {
+    if (coverImage.url) {
       const slide = pptx.addSlide();
-      slide.addImage({ data: coverImage, x: 0, y: 0, w: '100%', h: '100%' });
+      slide.addImage({ data: coverImage.url, x: 0, y: 0, w: '100%', h: '100%' });
     }
 
     // Pages
     blueprint.pages.forEach(page => {
+      const slide = pptx.addSlide();
       if (page.imageUrl) {
-        const slide = pptx.addSlide();
         slide.addImage({ data: page.imageUrl, x: 0, y: 0, w: '100%', h: '100%' });
-        slide.addText(page.text, { x: 0, y: '85%', w: '100%', align: 'center', color: 'FFFFFF', fontSize: 24 });
+      } else {
+        slide.addText(`[Page ${page.pageNumber} Illustration Missing]`, { x: 0, y: '45%', w: '100%', align: 'center', fontSize: 24 });
       }
+      slide.addText(page.text, { x: 0, y: '85%', w: '100%', align: 'center', color: 'FFFFFF', fontSize: 24 });
     });
+
+    // End
+    if (endImage.url) {
+      const slide = pptx.addSlide();
+      slide.addImage({ data: endImage.url, x: 0, y: 0, w: '100%', h: '100%' });
+      slide.addText("THE END", { x: 0, y: '85%', w: '100%', align: 'center', color: 'FFFFFF', fontSize: 24 });
+    }
 
     pptx.writeFile({ fileName: `${blueprint.title.replace(/\s+/g, '_')}.pptx` });
   };
@@ -229,13 +307,13 @@ export default function App() {
 
     // Images
     const imgFolder = root?.folder("Images");
-    if (coverImage) imgFolder?.file("Page00_Cover.png", coverImage.split(',')[1], { base64: true });
+    if (coverImage.url) imgFolder?.file("Page00_Cover.png", coverImage.url.split(',')[1], { base64: true });
     blueprint.pages.forEach((page, i) => {
       if (page.imageUrl) {
         imgFolder?.file(`Page${(i + 1).toString().padStart(2, '0')}.png`, page.imageUrl.split(',')[1], { base64: true });
       }
     });
-    if (endImage) imgFolder?.file(`Page${(blueprint.pages.length + 1).toString().padStart(2, '0')}_End.png`, endImage.split(',')[1], { base64: true });
+    if (endImage.url) imgFolder?.file(`Page${(blueprint.pages.length + 1).toString().padStart(2, '0')}_End.png`, endImage.url.split(',')[1], { base64: true });
 
     // Metadata
     const metaFolder = root?.folder("Metadata");
@@ -399,15 +477,58 @@ export default function App() {
           </section>
 
           <section className="pt-4 border-t border-zinc-800">
-            <button 
-              onClick={handleGenerateStory}
-              disabled={isGeneratingBlueprint || !charDesc}
-              className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-600 py-3 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2 mb-3"
-            >
-              {isGeneratingBlueprint ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-              Generate Full Story
-            </button>
-            <p className="text-[10px] text-zinc-500 text-center italic">Requires character blueprint first</p>
+            <div className="space-y-4">
+              <button 
+                onClick={handleGenerateStory}
+                disabled={isGeneratingBlueprint || !charDesc}
+                className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-600 py-3 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20"
+              >
+                {isGeneratingBlueprint ? <Loader2 className="w-4 h-4 animate-spin" /> : <BookOpen className="w-4 h-4" />}
+                Generate Full Story
+              </button>
+              
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10px] font-medium text-zinc-500 mb-1">Start Page</label>
+                  <input 
+                    type="number" 
+                    min={1} max={pageCount}
+                    value={startRange}
+                    onChange={(e) => setStartRange(parseInt(e.target.value))}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-lg py-1.5 px-3 text-xs focus:ring-1 focus:ring-emerald-500 outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-medium text-zinc-500 mb-1">End Page</label>
+                  <input 
+                    type="number" 
+                    min={1} max={pageCount}
+                    value={endRange}
+                    onChange={(e) => setEndRange(parseInt(e.target.value))}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-lg py-1.5 px-3 text-xs focus:ring-1 focus:ring-emerald-500 outline-none"
+                  />
+                </div>
+              </div>
+
+              <button 
+                onClick={handleGenerateRange}
+                disabled={!blueprint || isGeneratingImages}
+                className="w-full bg-zinc-800 hover:bg-zinc-700 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2"
+              >
+                {isGeneratingImages ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                Generate Range
+              </button>
+
+              <button 
+                onClick={handleGenerateFullBook}
+                disabled={!blueprint || isGeneratingImages}
+                className="w-full bg-zinc-800 hover:bg-zinc-700 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2"
+              >
+                {isGeneratingImages ? <Loader2 className="w-3 h-3 animate-spin" /> : <ImagePlus className="w-3 h-3" />}
+                Generate All Images
+              </button>
+            </div>
+            <p className="text-[10px] text-zinc-500 text-center italic mt-4">Requires character blueprint first</p>
           </section>
         </aside>
 
@@ -423,119 +544,161 @@ export default function App() {
                 className="space-y-8"
               >
                 {!blueprint ? (
-                  <div className="h-[60vh] flex flex-col items-center justify-center text-center">
-                    <div className="w-20 h-20 rounded-3xl bg-zinc-900 flex items-center justify-center mb-6 border border-zinc-800">
+                  <div className="h-[60vh] flex flex-col items-center justify-center text-center space-y-4">
+                    <div className="w-20 h-20 rounded-full bg-zinc-900 flex items-center justify-center border border-zinc-800">
                       <BookOpen className="w-10 h-10 text-zinc-700" />
                     </div>
-                    <h3 className="text-2xl font-serif font-bold mb-2">Start Your Publishing Journey</h3>
-                    <p className="text-zinc-500 max-w-md">Configure your book settings on the left and generate a story blueprint to begin.</p>
+                    <div>
+                      <h3 className="text-xl font-serif font-bold text-zinc-300">No Story Generated</h3>
+                      <p className="text-zinc-500 max-w-xs mx-auto mt-2">Configure your book settings and click "Generate Full Story" to begin.</p>
+                    </div>
                   </div>
                 ) : (
-                  <>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <h2 className="text-3xl font-serif font-bold">{blueprint.title}</h2>
-                        <p className="text-zinc-500 italic">By {blueprint.author}</p>
-                      </div>
-                      <div className="flex gap-3">
-                        <button onClick={handleGenerateFullBook} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm font-bold flex items-center gap-2">
-                          <ImageIcon className="w-4 h-4" /> Generate All Images
-                        </button>
-                        <button onClick={exportPDF} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm font-bold flex items-center gap-2">
-                          <Download className="w-4 h-4" /> PDF
-                        </button>
-                        <button onClick={exportPPTX} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm font-bold flex items-center gap-2">
-                          <Layout className="w-4 h-4" /> PPTX
-                        </button>
-                      </div>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h2 className="text-3xl font-serif font-bold">{blueprint.title}</h2>
+                      <p className="text-zinc-500 italic">By {blueprint.author}</p>
                     </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-                      {/* Cover Card */}
-                      <div className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden group">
-                        <div className="aspect-[2/3] bg-zinc-950 relative">
-                          {coverImage ? (
-                            <img src={coverImage} className="w-full h-full object-cover" />
-                          ) : (
-                            <div className="absolute inset-0 flex items-center justify-center text-zinc-700 italic text-sm">Cover Image</div>
-                          )}
-                          <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button 
-                              onClick={async () => setCoverImage(await generatePageImage(`Cover for ${blueprint.title}`, finalStyle, charDesc, true))}
-                              className="p-2 bg-black/50 backdrop-blur-md rounded-lg text-white border border-white/10"
-                            >
-                              <RefreshCw className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-                        <div className="p-4 border-t border-zinc-800">
-                          <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1">Front Cover</div>
-                          <div className="text-sm font-medium truncate">{blueprint.title}</div>
-                        </div>
-                      </div>
-
-                      {/* Page Cards */}
-                      {blueprint.pages.map((page, idx) => (
-                        <div key={idx} className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden group">
-                          <div className="aspect-[2/3] bg-zinc-950 relative">
-                            {page.imageUrl ? (
-                              <img src={page.imageUrl} className="w-full h-full object-cover" />
-                            ) : (
-                              <div className="absolute inset-0 flex items-center justify-center text-zinc-700 italic text-sm">Page {page.pageNumber} Image</div>
-                            )}
-                            <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity flex gap-2">
-                              <button 
-                                onClick={() => handleRegeneratePage(idx)}
-                                className="p-2 bg-black/50 backdrop-blur-md rounded-lg text-white border border-white/10"
-                              >
-                                <RefreshCw className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </div>
-                          <div className="p-4 border-t border-zinc-800 space-y-3">
-                            <div className="flex items-center justify-between">
-                              <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Page {page.pageNumber}</div>
-                              <button className="text-zinc-500 hover:text-white"><Edit3 className="w-3 h-3" /></button>
-                            </div>
-                            <textarea 
-                              value={page.text}
-                              onChange={(e) => {
-                                const newPages = [...blueprint.pages];
-                                newPages[idx].text = e.target.value;
-                                setBlueprint({ ...blueprint, pages: newPages });
-                              }}
-                              className="w-full bg-transparent text-sm italic leading-relaxed text-zinc-300 resize-none outline-none focus:text-white"
-                              rows={2}
-                            />
-                          </div>
-                        </div>
-                      ))}
-
-                      {/* End Card */}
-                      <div className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden group">
-                        <div className="aspect-[2/3] bg-zinc-950 relative">
-                          {endImage ? (
-                            <img src={endImage} className="w-full h-full object-cover" />
-                          ) : (
-                            <div className="absolute inset-0 flex items-center justify-center text-zinc-700 italic text-sm">End Image</div>
-                          )}
-                          <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button 
-                              onClick={async () => setEndImage(await generatePageImage("Closing scene", finalStyle, charDesc))}
-                              className="p-2 bg-black/50 backdrop-blur-md rounded-lg text-white border border-white/10"
-                            >
-                              <RefreshCw className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-                        <div className="p-4 border-t border-zinc-800">
-                          <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1">Closing Page</div>
-                          <div className="text-sm font-medium">THE END</div>
-                        </div>
-                      </div>
+                    <div className="flex gap-3">
+                      <button onClick={exportPDF} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm font-bold flex items-center gap-2">
+                        <Download className="w-4 h-4" /> PDF
+                      </button>
+                      <button onClick={exportPPTX} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm font-bold flex items-center gap-2">
+                        <Layout className="w-4 h-4" /> PPTX
+                      </button>
                     </div>
-                  </>
+                  </div>
                 )}
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                  {/* Cover Card */}
+                  <div className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden group shadow-xl transition-all hover:border-emerald-500/30">
+                    <div className="aspect-[2/3] bg-zinc-950 relative flex items-center justify-center">
+                      {coverImage.url ? (
+                        <img src={coverImage.url} alt="Cover" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                      ) : (
+                        <div className="text-center p-4">
+                          {coverImage.status === 'generating' ? (
+                            <Loader2 className="w-8 h-8 animate-spin text-emerald-500 mx-auto" />
+                          ) : (
+                            <ImageIcon className="w-8 h-8 text-zinc-800 mx-auto mb-2" />
+                          )}
+                          <span className="text-[10px] uppercase tracking-widest text-zinc-600 font-bold">Cover Page</span>
+                        </div>
+                      )}
+                      <div className="absolute top-3 right-3">
+                        <StatusBadge status={coverImage.status} />
+                      </div>
+                    </div>
+                    <div className="p-4 bg-zinc-900/80 backdrop-blur-sm border-t border-zinc-800">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Front Cover</span>
+                        <button 
+                          onClick={async () => {
+                            setCoverImage({ status: 'generating' });
+                            const img = await generatePageImage(`Cover for ${blueprint?.title}`, finalStyle, charDesc, true);
+                            setCoverImage({ url: img, status: 'complete' });
+                          }} 
+                          disabled={!blueprint}
+                          className="p-1.5 hover:bg-zinc-800 rounded-lg transition-colors disabled:opacity-30"
+                          title="Regenerate Cover"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5 text-zinc-400" />
+                        </button>
+                      </div>
+                      <h4 className="text-sm font-serif font-bold text-zinc-200 line-clamp-1">{blueprint?.title || 'Untitled Book'}</h4>
+                    </div>
+                  </div>
+
+                  {/* Story Pages */}
+                  {(blueprint?.pages || Array.from({ length: pageCount }, (_, i) => ({ pageNumber: i + 1, text: '', illustrationPrompt: '', status: 'empty' as const }))).map((page, idx) => (
+                    <div key={idx} className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden group shadow-xl flex flex-col transition-all hover:border-emerald-500/30">
+                      <div className="aspect-[2/3] bg-zinc-950 relative flex items-center justify-center">
+                        {page.imageUrl ? (
+                          <img src={page.imageUrl} alt={`Page ${page.pageNumber}`} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        ) : (
+                          <div className="text-center p-4">
+                            {page.status === 'generating' ? (
+                              <Loader2 className="w-8 h-8 animate-spin text-emerald-500 mx-auto" />
+                            ) : (
+                              <ImageIcon className="w-8 h-8 text-zinc-800 mx-auto mb-2" />
+                            )}
+                            <span className="text-[10px] uppercase tracking-widest text-zinc-600 font-bold">Page {page.pageNumber}</span>
+                          </div>
+                        )}
+                        <div className="absolute top-3 right-3">
+                          <StatusBadge status={page.status} />
+                        </div>
+                      </div>
+                      <div className="p-4 flex-1 flex flex-col">
+                        <div className="flex items-center justify-between mb-3">
+                          <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Interior Page</span>
+                          <div className="flex gap-1">
+                            <button 
+                              onClick={() => handleRegeneratePage(idx)}
+                              disabled={!blueprint}
+                              className="p-1.5 hover:bg-zinc-800 rounded-lg transition-colors disabled:opacity-30"
+                              title="Regenerate Image"
+                            >
+                              <RefreshCw className="w-3.5 h-3.5 text-zinc-400" />
+                            </button>
+                          </div>
+                        </div>
+                        <textarea 
+                          value={page.text}
+                          disabled={!blueprint}
+                          placeholder={!blueprint ? "Generate story to edit text..." : "Enter rhyming couplet..."}
+                          onChange={(e) => {
+                            if (!blueprint) return;
+                            const newPages = [...blueprint.pages];
+                            newPages[idx].text = e.target.value;
+                            setBlueprint({ ...blueprint, pages: newPages });
+                          }}
+                          className="w-full bg-zinc-950/50 border border-zinc-800/50 rounded-lg p-2 text-xs text-zinc-300 leading-relaxed resize-none focus:ring-1 focus:ring-emerald-500 outline-none flex-1 font-serif italic disabled:opacity-50"
+                          rows={3}
+                        />
+                      </div>
+                    </div>
+                  ))}
+
+                  {/* End Card */}
+                  <div className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden group shadow-xl transition-all hover:border-emerald-500/30">
+                    <div className="aspect-[2/3] bg-zinc-950 relative flex items-center justify-center">
+                      {endImage.url ? (
+                        <img src={endImage.url} alt="End" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                      ) : (
+                        <div className="text-center p-4">
+                          {endImage.status === 'generating' ? (
+                            <Loader2 className="w-8 h-8 animate-spin text-emerald-500 mx-auto" />
+                          ) : (
+                            <ImageIcon className="w-8 h-8 text-zinc-800 mx-auto mb-2" />
+                          )}
+                          <span className="text-[10px] uppercase tracking-widest text-zinc-600 font-bold">End Page</span>
+                        </div>
+                      )}
+                      <div className="absolute top-3 right-3">
+                        <StatusBadge status={endImage.status} />
+                      </div>
+                    </div>
+                    <div className="p-4 bg-zinc-900/80 backdrop-blur-sm border-t border-zinc-800">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Back Matter</span>
+                        <button 
+                          onClick={async () => {
+                            setEndImage({ status: 'generating' });
+                            const img = await generatePageImage("Closing scene", finalStyle, charDesc);
+                            setEndImage({ url: img, status: 'complete' });
+                          }} 
+                          disabled={!blueprint}
+                          className="p-1.5 hover:bg-zinc-800 rounded-lg transition-colors disabled:opacity-30"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5 text-zinc-400" />
+                        </button>
+                      </div>
+                      <h4 className="text-sm font-serif font-bold text-zinc-200">The End</h4>
+                    </div>
+                  </div>
+                </div>
               </motion.div>
             )}
 

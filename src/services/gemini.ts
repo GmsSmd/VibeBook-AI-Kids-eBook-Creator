@@ -7,6 +7,7 @@ export interface StoryPage {
   text: string;
   illustrationPrompt: string;
   imageUrl?: string;
+  status: 'empty' | 'generating' | 'complete' | 'error';
 }
 
 export interface KDPMetadata {
@@ -146,7 +147,11 @@ export async function generateStoryBlueprint(
     }
   });
 
-  return JSON.parse(response.text || "{}");
+  const result = JSON.parse(response.text || "{}");
+  if (result.pages) {
+    result.pages = result.pages.map((p: any) => ({ ...p, status: 'empty' }));
+  }
+  return result;
 }
 
 export async function generatePageImage(
